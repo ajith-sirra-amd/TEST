@@ -67,11 +67,17 @@ import Qwen35ConfigGenerator from '@site/src/components/autoregressive/Qwen35Con
         - **H200 (141GB)** runs with tp=8.
         - **B200 (183GB)** runs with tp=8.
         - **B300 (275GB)** runs with tp=4.
+        - **MI300X (80GB)** requires tp=16 (2 nodes) since each rank needs ~100GB at tp=8.
+        - **MI325X (256GB)** runs with tp=8.
+        - **MI355X (192GB)** runs with tp=8.
     - **FP8**: The FP8 quantized model requires ~400GB for weights, cutting memory in half.
         - **H100 (80GB)** runs with tp=8.
         - **H200 (141GB)** runs with tp=4.
         - **B200 (183GB)** runs with tp=4.
         - **B300 (275GB)** runs with tp=2.
+        - **MI300X (80GB)** runs with tp=8.
+        - **MI325X (256GB)** runs with tp=4.
+        - **MI355X (192GB)** runs with tp=4.
     - **FP4**: The FP4 quantized model requires ~250GB for weights, cutting memory by almost 4x. Only compatible with B200/B300 (Blackwell architecture).
         - **B200 (183GB)** runs with tp=4.
         - **B300 (275GB)** runs with tp=2.
@@ -82,6 +88,9 @@ import Qwen35ConfigGenerator from '@site/src/components/autoregressive/Qwen35Con
 | H200     | 141GB  | 8       | 4      | N/A             |
 | B200     | 183GB  | 8       | 4      | 4               |
 | B300     | 275GB  | 4       | 2      | 2               |
+| MI300X   | 80GB   | 16      | 8      | N/A             |
+| MI325X   | 256GB  | 8       | 4      | N/A             |
+| MI355X   | 192GB  | 8       | 4      | N/A             |
 
 ## 4. Model Invocation
 
