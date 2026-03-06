@@ -17,16 +17,28 @@ const MiniMaxM25ConfigGenerator = () => {
           { id: 'h200', label: 'H200', default: true },
           { id: 'b200', label: 'B200', default: false },
           { id: 'a100', label: 'A100', default: false },
-          { id: 'h100', label: 'H100', default: false }
+          { id: 'h100', label: 'H100', default: false },
+          { id: 'mi300x', label: 'MI300X', default: false },
+          { id: 'mi325x', label: 'MI325X', default: false },
+          { id: 'mi355x', label: 'MI355X', default: false }
         ]
       },
       gpuCount: {
         name: 'gpuCount',
         title: 'GPU Count',
-        getDynamicItems: (values) => [
-          { id: '4gpu', label: '4', default: true},
-          { id: '8gpu', label: '8', default: false }
-        ]
+        getDynamicItems: (values) => {
+          const isAMD = values.hardware === 'mi300x' || values.hardware === 'mi325x' || values.hardware === 'mi355x';
+          if (isAMD) {
+            // AMD only supports 8 GPU configuration
+            return [
+              { id: '8gpu', label: '8', default: true }
+            ];
+          }
+          return [
+            { id: '4gpu', label: '4', default: true},
+            { id: '8gpu', label: '8', default: false }
+          ];
+        }
       },
       thinking: {
         name: 'thinking',
@@ -54,6 +66,7 @@ const MiniMaxM25ConfigGenerator = () => {
       const modelName = `${this.modelFamily}/MiniMax-M2.5`;
       // H100 requires at least 8 GPUs
       const is8gpu = gpuCount === '8gpu';
+      const isAMD = hardware === 'mi300x' || hardware === 'mi325x' || hardware === 'mi355x';
 
       let cmd = '';
       cmd += 'python -m sglang.launch_server \\\n';
@@ -79,6 +92,11 @@ const MiniMaxM25ConfigGenerator = () => {
 
       cmd += ` \\\n  --trust-remote-code`;
       cmd += ` \\\n  --mem-fraction-static 0.85`;
+
+      // Add AMD-specific backend configurations
+      if (isAMD) {
+        cmd += ` \\\n  --attention-backend triton`;
+      }
 
       return cmd;
     }
