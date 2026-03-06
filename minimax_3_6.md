@@ -19,6 +19,16 @@ SGLang offers multiple installation methods. You can choose the most suitable in
 
 Please refer to the [official SGLang installation guide](https://docs.sglang.ai/get_started/install.html) for installation instructions.
 
+**For AMD MI300X/MI325X/MI355X GPUs:**
+
+```bash
+# Docker (AMD MI300X/MI325X)
+docker pull lmsysorg/sglang:v0.5.9-rocm720-mi30x
+
+# Docker (AMD MI355X)
+docker pull lmsysorg/sglang:v0.5.9-rocm720-mi35x
+```
+
 ## 3. Model Deployment
 
 This section provides deployment configurations optimized for different hardware platforms and use cases.
@@ -47,7 +57,17 @@ import MiniMaxM25ConfigGenerator from '@site/src/components/autoregressive/MiniM
 **Hardware Requirements:**
 
 - **4-GPU deployment**: Requires 4× high-memory GPUs (e.g., H200, B200, A100, H100) with TP=4
-- **8-GPU deployment**: Requires 8× GPUs (e.g., H200, B200, A100, H100) with TP=8 and EP=8
+- **8-GPU deployment**: Requires 8× GPUs (e.g., H200, B200, A100, H100, MI300X, MI325X, MI355X) with TP=8 and EP=8
+
+| Hardware | Memory | GPU Count | TP | EP |
+| -------- | ------ | --------- | -- | -- |
+| H200     | 141GB  | 4 or 8    | 4 or 8 | 8 (8-GPU) |
+| B200     | 183GB  | 4 or 8    | 4 or 8 | 8 (8-GPU) |
+| A100     | 80GB   | 4 or 8    | 4 or 8 | 8 (8-GPU) |
+| H100     | 80GB   | 4 or 8    | 4 or 8 | 8 (8-GPU) |
+| MI300X   | 192GB  | 8         | 8      | 8          |
+| MI325X   | 256GB  | 8         | 8      | 8          |
+| MI355X   | 288GB  | 8         | 8      | 8          |
 
 ## 4. Model Invocation
 
