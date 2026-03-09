@@ -51,7 +51,7 @@ docker run -it --device=/dev/kfd --device=/dev/dri \
 ```
 
 ## Running Qwen3.5
-The configurations below have been verified on 8x H200 GPUs & 8x MI300 GPUs.
+The configurations below have been verified on 8x H200 GPUs and 8x MI300/MI355X GPUs.
 
 !!! tip
     We recommend using the official FP8 checkpoint [Qwen/Qwen3.5-397B-A17B-FP8](https://huggingface.co/Qwen/Qwen3.5-397B-A17B-FP8) for optimal serving efficiency.
