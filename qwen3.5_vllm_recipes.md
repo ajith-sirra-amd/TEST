@@ -44,9 +44,9 @@ docker run -it --device=/dev/kfd --device=/dev/dri \
   --group-add video \
   --ipc=host \
   --cap-add=SYS_PTRACE \
+  --entrypoint=/bin/bash \
   -p 8000:8000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  --entrypoint=/bin/bash \
   vllm/vllm-openai-rocm:v0.17.0
 ```
 
