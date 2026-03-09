@@ -46,6 +46,7 @@ docker run -it --device=/dev/kfd --device=/dev/dri \
   --cap-add=SYS_PTRACE \
   -p 8000:8000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
+  --entrypoint=/bin/bash \
   vllm/vllm-openai-rocm:v0.17.0
 ```
 
