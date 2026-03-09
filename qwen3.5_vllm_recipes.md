@@ -51,7 +51,7 @@ docker run -it --device=/dev/kfd --device=/dev/dri \
 ```
 
 ## Running Qwen3.5
-The configurations below have been verified on 8x H200 GPUs.
+The configurations below have been verified on 8x H200 GPUs & 8x MI300 GPUs.
 
 !!! tip
     We recommend using the official FP8 checkpoint [Qwen/Qwen3.5-397B-A17B-FP8](https://huggingface.co/Qwen/Qwen3.5-397B-A17B-FP8) for optimal serving efficiency.
@@ -88,7 +88,7 @@ vllm serve Qwen/Qwen3.5-397B-A17B-FP8 \
 !!! tip
     To enable tool calling, add `--enable-auto-tool-choice --tool-call-parser qwen3_coder` to the serve command.
 
-### Latency-Focused Serving
+### Latency-Focused Serving (Currently supported on Nvidia GPUs only)
 
 For latency-sensitive workloads at low concurrency, enable MTP-1 speculative decoding and disable prefix caching. MTP-1 reduces time-per-output-token (TPOT) with a high acceptance rate, at the cost of lower throughput under load.
 
@@ -109,6 +109,19 @@ You can also deploy the model across 4GPUs on a GB200 node, using the similar ba
 ```bash
 vllm serve nvidia/Qwen3.5-397B-A17B-NVFP4 \
   -dp 4 \
+  --enable-expert-parallel \
+  --language-model-only \
+  --reasoning-parser qwen3 \
+  --enable-prefix-caching
+```
+
+### MI355X Deployment
+
+You can also deploy the model across 2GPUs on a MI355X node, using the similar base configuration as above.
+
+```bash
+vllm serve Qwen/Qwen3.5-397B-A17B-FP8 \
+  -dp 2 \
   --enable-expert-parallel \
   --language-model-only \
   --reasoning-parser qwen3 \
