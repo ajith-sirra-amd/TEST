@@ -21,7 +21,7 @@ source .venv/bin/activate
 uv pip install vllm --extra-index-url https://wheels.vllm.ai/rocm
 ```
 
-### Docker
+### Docker (Nvidia)
 ```bash
 docker run --gpus all \
   -p 8000:8000 \
@@ -35,6 +35,19 @@ docker run --gpus all \
 (See detailed deployment configurations below)
 
 For Blackwell GPUs, use `vllm/vllm-openai:cu130-nightly`
+
+### Docker (AMD MI300X/MI325X/MI355X)
+
+```bash
+docker run -it --device=/dev/kfd --device=/dev/dri \
+  --security-opt seccomp=unconfined \
+  --group-add video \
+  --ipc=host \
+  --cap-add=SYS_PTRACE \
+  -p 8000:8000 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  rocm/vllm-dev:nightly
+```
 
 ## Running Qwen3.5
 The configurations below have been verified on 8x H200 GPUs.
