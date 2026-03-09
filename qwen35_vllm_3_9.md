@@ -13,7 +13,15 @@ source .venv/bin/activate
 uv pip install -U vllm --torch-backend=auto
 ```
 
-### Docker
+### Pip Install (AMD ROCm)
+> Note: The vLLM wheel for ROCm requires Python 3.12, ROCm 7.0, and glibc >= 2.35. If your environment does not meet these requirements, please use the Docker-based setup as described below. Supported GPUs: MI300X, MI325X, MI355X.
+```bash
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install vllm --extra-index-url https://wheels.vllm.ai/rocm
+```
+
+### Docker (NVIDIA)
 ```bash
 docker run --gpus all \
   -p 8000:8000 \
@@ -28,8 +36,22 @@ docker run --gpus all \
 
 For Blackwell GPUs, use `vllm/vllm-openai:cu130-nightly`
 
+### Docker (AMD MI300X/MI325X/MI355X)
+
+```bash
+docker run -it --device=/dev/kfd --device=/dev/dri \
+  --security-opt seccomp=unconfined \
+  --group-add video \
+  --ipc=host \
+  --cap-add=SYS_PTRACE \
+  --entrypoint=/bin/bash \
+  -p 8000:8000 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  vllm/vllm-openai-rocm:v0.17.0
+```
+
 ## Running Qwen3.5
-The configurations below have been verified on 8x H200 GPUs.
+The configurations below have been verified on 8x H200 GPUs and 8x MI300X/MI355X GPUs.
 
 !!! tip
     We recommend using the official FP8 checkpoint [Qwen/Qwen3.5-397B-A17B-FP8](https://huggingface.co/Qwen/Qwen3.5-397B-A17B-FP8) for optimal serving efficiency.
@@ -68,7 +90,10 @@ vllm serve Qwen/Qwen3.5-397B-A17B-FP8 \
 
 ### Latency-Focused Serving
 
-For latency-sensitive workloads at low concurrency, enable MTP-1 speculative decoding and disable prefix caching. MTP-1 reduces time-per-output-token (TPOT) with a high acceptance rate, at the cost of lower throughput under load.
+For latency-sensitive workloads at low concurrency, you can enable MTP-1 speculative decoding and disable prefix caching. MTP-1 reduces time-per-output-token (TPOT) with a high acceptance rate, at the cost of lower throughput under load.
+
+!!! note
+    MTP-1 speculative decoding is available on NVIDIA GPUs. Support for AMD GPUs is under development.
 
 ```bash
 vllm serve Qwen/Qwen3.5-397B-A17B-FP8 \
@@ -82,11 +107,24 @@ vllm serve Qwen/Qwen3.5-397B-A17B-FP8 \
 !!! tip
     We recommend using the NVFP4 checkpoint [nvidia/Qwen3.5-397B-A17B-NVFP4](https://huggingface.co/nvidia/Qwen3.5-397B-A17B-NVFP4) for optimal serving efficiency.
 
-You can also deploy the model across 4GPUs on a GB200 node, using the similar base configuration as H200.
+You can also deploy the model across 4 GPUs on a GB200 node, using the similar base configuration as H200.
 
 ```bash
 vllm serve nvidia/Qwen3.5-397B-A17B-NVFP4 \
   -dp 4 \
+  --enable-expert-parallel \
+  --language-model-only \
+  --reasoning-parser qwen3 \
+  --enable-prefix-caching
+```
+
+### MI355X Deployment
+
+You can also deploy the model across 2 GPUs on a MI355X node, using the similar base configuration as above.
+
+```bash
+vllm serve Qwen/Qwen3.5-397B-A17B-FP8 \
+  -dp 2 \
   --enable-expert-parallel \
   --language-model-only \
   --reasoning-parser qwen3 \
