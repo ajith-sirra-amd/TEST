@@ -61,8 +61,6 @@ import MiniMaxM25ConfigGenerator from '@site/src/components/autoregressive/MiniM
 
 **Hardware Requirements: AMD**
 
-MiniMax-M2.5 has ~230GB of weights, allowing flexible deployment on AMD GPUs:
-
 - **2-GPU deployment**: Requires 2× high-memory GPUs (e.g., MI300X, MI325X, MI355X) with TP=2
 - **4-GPU deployment**: Requires 4× GPUs (e.g., MI300X, MI325X, MI355X) with TP=4
 - **8-GPU deployment**: Requires 8× GPUs (e.g., MI300X, MI325X, MI355X) with TP=8
