@@ -14,7 +14,19 @@ For details, see [official documentation](https://huggingface.co/moonshotai/Kimi
 
 ## 2. SGLang Installation
 
-Refer to the [official SGLang installation guide](https://docs.sglang.ai/get_started/install.html).
+SGLang offers multiple installation methods. You can choose the most suitable installation method based on your hardware platform and requirements.
+
+Please refer to the [official SGLang installation guide](https://docs.sglang.ai/get_started/install.html) for installation instructions.
+
+**For AMD MI300X/MI325X/MI355X GPUs:**
+
+```bash
+# Docker (AMD MI300X/MI325X)
+docker pull lmsysorg/sglang:v0.5.9-rocm720-mi30x
+
+# Docker (AMD MI355X)
+docker pull lmsysorg/sglang:v0.5.9-rocm720-mi35x
+```
 
 ## 3. Model Deployment
 
