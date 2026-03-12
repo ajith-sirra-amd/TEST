@@ -41,7 +41,7 @@ docker run --gpus all \
 
 For Blackwell GPUs, use `vllm/vllm-openai:cu130-nightly`
 
-#### AMD (MI300X/MI325X/MI355X)
+#### AMD
 
 ```bash
 docker run --device=/dev/kfd --device=/dev/dri \
