@@ -25,9 +25,9 @@ source .venv/bin/activate
 uv pip install vllm --extra-index-url https://wheels.vllm.ai/rocm
 ```
 
-### Use vLLM with Docker
+### Docker
 
-#### NVIDIA 
+#### NVIDIA
 
 Pull the vLLM release image from [Docker Hub](https://hub.docker.com/r/vllm/vllm-openai/tags?name=17.0):
 
