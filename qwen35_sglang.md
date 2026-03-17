@@ -66,8 +66,8 @@ import Qwen35ConfigGenerator from '@site/src/components/autoregressive/Qwen35Con
 
 - Speculative decoding (MTP) can significantly reduce latency for interactive use cases.
 - **Mamba Radix Cache**: Qwen3.5's hybrid Gated Delta Networks architecture supports two mamba scheduling strategies via `--mamba-scheduler-strategy`:
-  - **V1 (`no_buffer`)**: Default. No overlap scheduler, lower memory usage.
-  - **V2 (`extra_buffer`)**: Enables overlap scheduling and branching point caching with `--mamba-scheduler-strategy extra_buffer --page-size 64`. Requires FLA kernel backend. Trades higher mamba state memory for better throughput. Strictly superior in non-KV-cache-bound scenarios; in KV-cache-bound cases, weigh the overlap scheduling benefit against reduced max concurrency. `--page-size` must satisfy `FLA_CHUNK_SIZE % page_size == 0` or `page_size % FLA_CHUNK_SIZE == 0` (`FLA_CHUNK_SIZE` is currently 64).
+  - **V1 (`no_buffer`)**: Default. No overlap scheduler, lower memory usage. Required for AMD MI GPUs.
+  - **V2 (`extra_buffer`)**: Enables overlap scheduling and branching point caching with `--mamba-scheduler-strategy extra_buffer --page-size 64`. Requires FLA kernel backend (NVIDIA GPUs only). Trades higher mamba state memory for better throughput. Strictly superior in non-KV-cache-bound scenarios; in KV-cache-bound cases, weigh the overlap scheduling benefit against reduced max concurrency. `--page-size` must satisfy `FLA_CHUNK_SIZE % page_size == 0` or `page_size % FLA_CHUNK_SIZE == 0` (`FLA_CHUNK_SIZE` is currently 64).
 - The `--mem-fraction-static` flag is recommended for optimal memory utilization, adjust it based on your hardware and workload.
 - Context length defaults to 262,144 tokens. If you encounter OOM errors, consider reducing it, but maintain at least 128K to preserve thinking capabilities.
 - To speed up weight loading for this large model, add `--model-loader-extra-config='{"enable_multithread_load": "true","num_threads": 64}'` to the launch command.
@@ -107,11 +107,13 @@ import Qwen35ConfigGenerator from '@site/src/components/autoregressive/Qwen35Con
 
 ## 4. Model Invocation
 
+### NVIDIA :
+
 Deploy Qwen3.5-397B-A17B with the following command (H200, all features enabled):
 
 ```shell
-python -m sglang.launch_server \
-  --model Qwen/Qwen3.5-397B-A17B \
+sglang serve \
+  --model-path Qwen/Qwen3.5-397B-A17B \
   --tp 8 \
   --reasoning-parser qwen3 \
   --tool-call-parser qwen3_coder \
@@ -123,6 +125,23 @@ python -m sglang.launch_server \
   --host 0.0.0.0 \
   --port 30000
 ```
+
+### AMD :
+
+Deploy Qwen3.5-397B-A17B with the following command (MI300X/MI325X/MI355X):
+
+```shell
+sglang serve \
+  --model-path Qwen/Qwen3.5-397B-A17B \
+  --tp 8 \
+  --reasoning-parser qwen3 \
+  --tool-call-parser qwen3_coder \
+  --mem-fraction-static 0.8 \
+  --attention-backend triton \
+  --host 0.0.0.0 \
+  --port 30000
+```
+> **Note:** TP8 works on all MI GPUs. For MI325X/MI355X, you can use --tp 4 as the minimum requirement.
 
 ### 4.1 Basic Usage
 
