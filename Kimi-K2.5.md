@@ -115,7 +115,7 @@ vllm serve moonshotai/Kimi-K2.5 -tp 8 \
 ```
 The `--reasoning-parser` flag specifies the reasoning parser to use for extracting reasoning content from the model output.
 
-### AMD
+### AMD (ROCm)
 
 The configuration below has been verified on 8x MI300X/MI355X GPUs.
 ```bash
