@@ -25,9 +25,9 @@ source .venv/bin/activate
 uv pip install vllm --extra-index-url https://wheels.vllm.ai/rocm
 ```
 
-### Docker
+### Use vLLM with Docker
 
-#### NVIDIA
+#### NVIDIA 
 
 Pull the vLLM release image from [Docker Hub](https://hub.docker.com/r/vllm/vllm-openai/tags?name=17.0):
 
@@ -82,6 +82,9 @@ docker run --device=/dev/kfd --device=/dev/dri \
   --group-add video \
   --ipc=host \
   -p 8000:8000 \
+  -e VLLM_ROCM_USE_AITER=1 \
+  -e VLLM_ROCM_QUICK_REDUCE_QUANTIZATION=INT4 \
+  -e VLLM_ROCM_USE_AITER_RMSNORM=0 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   vllm/vllm-openai-rocm:latest \
   moonshotai/Kimi-K2.5 \
@@ -116,11 +119,17 @@ The `--reasoning-parser` flag specifies the reasoning parser to use for extracti
 
 The configuration below has been verified on 8x MI300X/MI355X GPUs.
 ```bash
+export VLLM_ROCM_USE_AITER=1  # Enable AITER optimization for attention and tensor operations
+export VLLM_ROCM_QUICK_REDUCE_QUANTIZATION=INT4  # Use INT4 quantization for faster all-reduce operations
+export VLLM_ROCM_USE_AITER_RMSNORM=0  # Disable AITER for RMSNorm layers
+
 vllm serve moonshotai/Kimi-K2.5 -tp 8 \
     --mm-encoder-tp-mode data \
     --tool-call-parser kimi_k2 \
     --reasoning-parser kimi_k2 \
     --enable-auto-tool-choice \
+    --block-size=1 \
+    --mm-encoder-tp-mode data \
     --trust-remote-code
 ```
 
