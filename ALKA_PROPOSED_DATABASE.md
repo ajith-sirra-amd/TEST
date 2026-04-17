@@ -7,7 +7,7 @@
 ## Structure Overview
 
 ```
-ALKA/
+ALKA_DATABASE/
 ├── data/
 │   ├── <model-name>/                    # Normalized model name
 │   │   ├── <hardware>/                  # GPU type (mi355x, mi300x, b200, h200, h100)
