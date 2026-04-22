@@ -22,7 +22,7 @@ import ConfigGenerator from '../../base/ConfigGenerator';
  *   35B-A3B:   H100 tp=1, H200 tp=1, B200 tp=1, B300 tp=1, MI300X tp=1, MI325X tp=1, MI355X tp=1
  *   27B:       tp=1 on all hardware (including MI300X, MI325X, MI355X)
  *
- * FP4 (397B only, Blackwell required): B200 tp=4, B300 tp=2
+ * FP4 (397B only): B200 tp=4, B300 tp=2 (Blackwell/NVIDIA), MI355X tp=2 (AMD)
  */
 
 const MOE_MODELS = new Set(['397b', '122b', '35b']);
@@ -71,7 +71,7 @@ const Qwen35ConfigGenerator = () => {
             { id: 'b300', label: 'B300', default: isNvfp4, disabled: false },
             { id: 'mi300x', label: 'MI300X', default: false, disabled: isNvfp4 },
             { id: 'mi325x', label: 'MI325X', default: false, disabled: isNvfp4 },
-            { id: 'mi355x', label: 'MI355X', default: false, disabled: isNvfp4 }
+            { id: 'mi355x', label: 'MI355X', default: false, disabled: false }
           ];
         }
       },
@@ -160,7 +160,7 @@ const Qwen35ConfigGenerator = () => {
         b300: { bf16: { tp: 4,  mem: 0.8 }, fp8: { tp: 2, mem: 0.8 }, fp4: { tp: 2, mem: 0.8 } },
         mi300x: { bf16: { tp: 8, mem: 0.8 }, fp8: { tp: 4, mem: 0.8 } },
         mi325x: { bf16: { tp: 4, mem: 0.8 }, fp8: { tp: 2, mem: 0.8 } },
-        mi355x: { bf16: { tp: 4, mem: 0.8 }, fp8: { tp: 2, mem: 0.8 } }
+        mi355x: { bf16: { tp: 4, mem: 0.8 }, fp8: { tp: 2, mem: 0.8 }, fp4: { tp: 2, mem: 0.8 } }
       },
       '122b': {
         h100: { bf16: { tp: 4, mem: 0.8 }, fp8: { tp: 2, mem: 0.8 } },
@@ -233,14 +233,22 @@ const Qwen35ConfigGenerator = () => {
       const hwConfig = this.modelConfigs[model]?.[hardware]?.[quantization];
       if (!hwConfig) {
         if (quantization === 'fp4') {
-          return '# FP4 requires B200/B300 (Blackwell) and is only available for Qwen3.5-397B-A17B';
+          return '# FP4 requires B200/B300 (Blackwell) or MI355X (AMD) and is only available for Qwen3.5-397B-A17B';
         }
         return '# Please select a valid hardware and quantization combination';
       }
 
+      const amdGpus = ['mi300x', 'mi325x', 'mi355x'];
+      const isAmdGpu = amdGpus.includes(hardware);
+
       let modelName;
       if (quantization === 'fp4') {
-        modelName = 'nvidia/Qwen3.5-397B-A17B-NVFP4';
+        // AMD GPUs use MXFP4 variant, NVIDIA uses NVFP4 variant
+        if (isAmdGpu) {
+          modelName = 'amd/Qwen3.5-397B-A17B-MXFP4';
+        } else {
+          modelName = 'nvidia/Qwen3.5-397B-A17B-NVFP4';
+        }
       } else {
         const suffix = MODEL_SUFFIX[model];
         const quantSuffix = quantization === 'fp8' ? '-FP8' : '';
@@ -262,8 +270,7 @@ const Qwen35ConfigGenerator = () => {
 
       // Force Mamba V1 for AMD GPUs (V2 requires FLA backend)
       // Force Mamba V2 when MTP is enabled
-      const amdGpus = ['mi300x', 'mi325x', 'mi355x'];
-      const actualMambaCache = amdGpus.includes(hardware) ? 'v1' : (speculative === 'enabled' ? 'v2' : mambaCache);
+      const actualMambaCache = isAmdGpu ? 'v1' : (speculative === 'enabled' ? 'v2' : mambaCache);
       const adjustedValues = { ...values, mambaCache: actualMambaCache };
 
       // Apply commandRule from all options except quantization (handled via model name)
@@ -286,8 +293,8 @@ const Qwen35ConfigGenerator = () => {
         cmd += ` \\\n  --tokenizer-worker-num 6`;
       }
 
-      // Enable allreduce fusion for all Qwen3.5 configs (skip for FP4: benchmark only enables this for TP≥8).
-      if (quantization !== 'fp4') {
+      // Enable allreduce fusion for NVIDIA GPUs only (skip for FP4: benchmark only enables this for TP≥8, skip for AMD: not supported).
+      if (quantization !== 'fp4' && !isAmdGpu) {
         cmd += ` \\\n  --enable-flashinfer-allreduce-fusion`;
       }
 
@@ -305,8 +312,12 @@ const Qwen35ConfigGenerator = () => {
       }
 
       // Append AMD GPU-specific backend configurations
-      if (hardware === 'mi300x' || hardware === 'mi325x' || hardware === 'mi355x') {
-        cmd += ` \\\n  --attention-backend triton`;
+      if (isAmdGpu) {
+        cmd += ` \\\n  --trust-remote-code`;
+        cmd += ` \\\n  --attention-backend aiter`;
+        cmd += ` \\\n  --model-loader-extra-config '{"enable_multithread_load": true}'`;
+        cmd += ` \\\n  --watchdog-timeout 1200`;
+        cmd += ` \\\n  --disable-radix-cache`;
       }
 
       // Tokenizer workers for H200 and B200/B300
@@ -316,8 +327,8 @@ const Qwen35ConfigGenerator = () => {
         }
       }
 
-      // FP4-specific backend settings
-      if (quantization === 'fp4') {
+      // FP4-specific backend settings (NVIDIA only)
+      if (quantization === 'fp4' && (hardware === 'b200' || hardware === 'b300')) {
         cmd += ' \\\n  --quantization modelopt_fp4';
         cmd += ' \\\n  --fp4-gemm-backend flashinfer_cutlass';
         cmd += ' \\\n  --kv-cache-dtype fp8_e4m3';
