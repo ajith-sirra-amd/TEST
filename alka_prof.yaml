@@ -84,7 +84,7 @@ jobs:
     steps:
       - name: Clean up previous runs
         run: |
-          docker run --rm -v "${PWD}:/workspace" -w /workspace alpine \
+          docker run --rm -v "${PWD}:/workspace2" -w /workspace2 alpine \
             sh -c "rm -rf 3rdparty/benchNap/results_* 3rdparty/benchNap/__pycache__ 3rdparty/benchNap/config/ci_profile.yaml; chown -R $(id -u):$(id -g) 3rdparty/benchNap" \
             2>/dev/null || true
 
@@ -109,6 +109,41 @@ jobs:
         run: |
           if [[ -n "${HF_TOKEN}" ]]; then echo "::add-mask::${HF_TOKEN}"; fi
 
+      - name: Patch DeepSeek V4 model config
+        if: (contains(inputs.model, 'DeepSeek-V4') || contains(inputs.model, 'deepseek-v4') || contains(inputs.model, 'DeepSeek_V4')) && inputs.device == 'amd'
+        env:
+          MODEL: ${{ inputs.model }}
+          HF_CACHE: ${{ inputs.hf_cache }}
+        run: |
+          echo "=== Patching DeepSeek V4 model config ==="
+          export HUGGINGFACE_HUB_CACHE="${HF_CACHE}"
+          export HF_HUB_CACHE="${HF_CACHE}"
+          python3 << 'PYEOF'
+          import json
+          import os
+          from huggingface_hub import hf_hub_download
+
+          model = os.environ['MODEL']
+          print(f"Checking model: {model}")
+
+          try:
+              path = hf_hub_download(repo_id=model, filename="config.json")
+              print(f"Downloaded config.json to: {path}")
+
+              with open(path) as f:
+                  config = json.load(f)
+
+              if config.get("model_type") == "deepseek_v4":
+                  config["model_type"] = "deepseek_v3"
+                  with open(path, "w") as f:
+                      json.dump(config, f, indent=2)
+                  print(f"✓ Patched {path}: model_type deepseek_v4 -> deepseek_v3")
+              else:
+                  print(f"✓ No patch needed: model_type is {config.get('model_type')!r}")
+          except Exception as e:
+              print(f"Warning: Could not patch model config: {e}")
+          PYEOF
+
       - name: Generate benchNap config
         env:
           BN_MODEL: ${{ inputs.model }}
@@ -128,7 +163,12 @@ jobs:
           tp = int(os.environ['BN_TP'])
           dp = int(os.environ.get('BN_DP', '1'))
           ep_raw = os.environ.get('BN_EP', 'false').strip().lower()
-          ep = False if ep_raw in ('false', '0', '') else int(ep_raw)
+          if ep_raw in ('false', '0', ''):
+              ep = False
+          elif ep_raw == 'true':
+              ep = True
+          else:
+              ep = int(ep_raw)
           dev = 'HIP_VISIBLE_DEVICES' if os.environ['BN_DEVICE'] == 'amd' else 'CUDA_VISIBLE_DEVICES'
           gpu_ids = ','.join(str(i) for i in range(tp))
           env_vars = {dev: gpu_ids}
@@ -191,7 +231,7 @@ jobs:
             )
           fi
 
-          RUN_CMD="cd /workspace && python3 run_main.py --config config/ci_profile.yaml"
+          RUN_CMD="cd /workspace2 && python3 run_main.py --config config/ci_profile.yaml"
 
           echo "=== Launching profiling ==="
           echo "Device: ${DEVICE} | Image: ${IMAGE} | HF cache: ${HF_CACHE} | CONTAINER_NAME: ${CONTAINER_NAME}"
@@ -201,8 +241,8 @@ jobs:
             "${GPU_FLAGS[@]}" \
             --ipc=host \
             --network=host \
-            -v "${PWD}/3rdparty/benchNap:/workspace" \
-            -w /workspace \
+            -v "${PWD}/3rdparty/benchNap:/workspace2" \
+            -w /workspace2 \
             -v "${HF_CACHE}:/hf_cache" \
             -e "HUGGINGFACE_HUB_CACHE=/hf_cache" \
             -e "HF_TOKEN=${HF_TOKEN}" \
@@ -213,8 +253,8 @@ jobs:
       - name: Fix file permissions
         if: always()
         run: |
-          docker run --rm -v "${PWD}/3rdparty/benchNap:/workspace" -w /workspace alpine \
-            sh -c "chown -R $(id -u):$(id -g) /workspace" 2>/dev/null || true
+          docker run --rm -v "${PWD}/3rdparty/benchNap:/workspace2" -w /workspace2 alpine \
+            sh -c "chown -R $(id -u):$(id -g) /workspace2" 2>/dev/null || true
 
       - name: Collect results
         if: always()
@@ -265,9 +305,9 @@ jobs:
           case "${BACKEND}" in
             sglang)
               if [[ "${PARSE_MODE}" == "prefill-only" ]]; then
-                TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*-prefill.trace.json*" | head -1)
+                TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -iname "*-prefill.trace.json*" -o -iname "*-EXTEND.trace.json*" | head -1)
               else
-                TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*-decode.trace.json*" | head -1)
+                TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -iname "*-decode.trace.json*" -o -iname "*-DECODE.trace.json*" | head -1)
               fi
               # Fallback to any sglang trace
               [[ -z "${TRACE_FILE}" ]] && TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*.trace.json*" | head -1)
@@ -316,9 +356,14 @@ jobs:
             --layer-filtered-output "${DEST_DIR}/${FILE_PREFIX}_layer_filtered.csv" \
             --hf-model-id "${{ inputs.model }}"
 
+          # Copy trace file to results directory for archival
+          TRACE_BASENAME=$(basename "${TRACE_FILE}")
+          cp -v "${TRACE_FILE}" "${DEST_DIR}/${TRACE_BASENAME}" || echo "Warning: failed to copy trace file"
+
           ls -la "${DEST_DIR}/"
           echo "dest_dir=${DEST_DIR}" >> "$GITHUB_ENV"
           echo "file_prefix=${FILE_PREFIX}" >> "$GITHUB_ENV"
+          set +x
 
       - name: Export dashboard CSV
         if: always() && env.dest_dir != ''
@@ -359,38 +404,173 @@ jobs:
         if: always() && env.dest_dir != ''
         uses: actions/upload-artifact@v4
         with:
-          name: alka-${{ inputs.backend }}-${{ inputs.runner }}-${{ inputs.tp }}tp-${{ inputs.concurrency }}con-${{ github.run_id }}
+          name: alka-${{ inputs.backend }}-${{ inputs.runner }}-${{ inputs.tp }}tp-${{ inputs.concurrency }}con-${{ inputs.isl }}isl-${{ inputs.osl }}osl-${{ github.run_id }}
           path: ${{ env.dest_dir }}/
           if-no-files-found: warn
 
-      - name: Commit and push results
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          set -euo pipefail
-          DEST_DIR="${dest_dir:-}"
-          if [[ -z "${DEST_DIR}" ]] || ! ls "${DEST_DIR}"/* 2>/dev/null | head -1 > /dev/null; then
-            echo "No ALKA results to commit"; exit 0
-          fi
+  save-to-database:
+    needs: case
+    runs-on: [self-hosted, linux, alka-database]
+    if: ${{ !cancelled() && (success() || failure()) }}
+    steps:
+      - uses: actions/checkout@v4
 
-          MODEL_ID=$(echo "${{ inputs.model }}" | tr '/' '-')
+      - name: Setup environment
+        run: |
+          echo "Setting up database save environment"
+
+      - name: Download ALKA results artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: alka-${{ inputs.backend }}-${{ inputs.runner }}-${{ inputs.tp }}tp-${{ inputs.concurrency }}con-${{ inputs.isl }}isl-${{ inputs.osl }}osl-${{ github.run_id }}
+          path: /tmp/alka-results-${{ github.run_id }}
+
+      - name: Save files to persistent storage
+        run: |
+          set -x
+          set -euo pipefail
           BACKEND="${{ inputs.backend }}"
+          MODEL_RAW="${{ inputs.model }}"
           RUNNER="${{ inputs.runner }}"
+          TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+
+          # Normalize model name to standardized naming
+          MODEL_NAME_RAW=$(echo "${MODEL_RAW}" | sed 's/\//_/g')
+          case "${MODEL_RAW}" in
+            *GLM-5.1*|*GLM5.1*) MODEL_NAME="GLM5.1" ;;
+            *GLM-5*|*GLM5*) MODEL_NAME="GLM5" ;;
+            *Qwen3.5*) MODEL_NAME="Qwen3.5" ;;
+            *Kimi-K2.5*|*Kimi*K2.5*) MODEL_NAME="Kimi-K2.5" ;;
+            *MiniMax-M2.5*|*MiniMax*M2.5*) MODEL_NAME="MiniMax-M2.5" ;;
+            *DeepSeek-V4-Pro*|*DeepSeek*V4*Pro*) MODEL_NAME="DeepSeek-V4-Pro" ;;
+            *DeepSeek-R1-0528*|*DeepSeek*R1*0528*) MODEL_NAME="DeepSeek-R1-0528" ;;
+            *gpt-oss-120b*|*GPT-OSS-120B*) MODEL_NAME="GPT-OSS-120B" ;;
+            *) MODEL_NAME="${MODEL_NAME_RAW}" ;;
+          esac
+
+          # Detect precision from model name or path
+          PRECISION=""
+          case "${MODEL_RAW}" in
+            *DeepSeek-V4-Pro*|*DeepSeek*V4*Pro*) PRECISION="FP4" ;;  # DeepSeek V4 Pro uses FP4 experts
+            *NVFP4*|*FP4*|*fp4*) PRECISION="FP4" ;;
+            *NVFP8*|*FP8*|*fp8*) PRECISION="FP8" ;;
+            *BF16*|*bf16*) PRECISION="BF16" ;;
+            *FP32*|*fp32*) PRECISION="FP32" ;;
+            *) PRECISION="BF16" ;;  # Default to BF16 if not detected
+          esac
+
+          # Derive hardware from runner label
+          case "${RUNNER}" in
+            *mi355x*) HW="mi355x" ;;
+            *mi350x*) HW="mi350x" ;;
+            *mi325x*) HW="mi325x" ;;
+            *mi300x*|tw*) HW="mi300x" ;;
+            *b200*|dgx*) HW="b200" ;;
+            *h200*) HW="h200" ;;
+            *h100*) HW="h100" ;;
+            *) HW="${RUNNER}" ;;
+          esac
+
+          # Build config string from inputs (always include all parameters)
           TP="${{ inputs.tp }}"
           CONC="${{ inputs.concurrency }}"
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add "${DEST_DIR}"
-          git commit -m "Add ALKA results: ${MODEL_ID} ${BACKEND} tp${TP} conc${CONC} on ${RUNNER} [automated]"
+          DP="${{ inputs.dp }}"
+          EP_RAW="${{ inputs.ep }}"
+          ISL="${{ inputs.isl }}"
+          OSL="${{ inputs.osl }}"
 
-          # Retry push to handle concurrent commits from parallel inputs jobs
-          MAX_RETRIES=5
-          for i in $(seq 1 $MAX_RETRIES); do
-            if git push; then
-              echo "Push succeeded on attempt $i"; break
-            fi
-            echo "Push failed (attempt $i/$MAX_RETRIES), rebasing..."
-            git pull --rebase origin main
-            [[ $i -eq $MAX_RETRIES ]] && { echo "Push failed after $MAX_RETRIES attempts"; exit 1; }
-          done
+          # Convert EP: "false" -> "disabled", otherwise use actual value
+          if [[ "${EP_RAW}" == "false" ]]; then
+            EP="disabled"
+          else
+            EP="${EP_RAW}"
+          fi
+
+          CONFIG="tp-${TP}_ep-${EP}_${PRECISION}_dp-${DP}_conc-${CONC}_isl-${ISL}_osl-${OSL}"
+
+          # Build hierarchical directory structure
+          DATABASE_ROOT="/wrk/dcgmktg_bench_xhd/ajith/ALKA_DATABASE/DATABASE"
+          FOLDER="${MODEL_NAME}/${HW}/${BACKEND}/${CONFIG}/${TIMESTAMP}"
+          LATEST="${MODEL_NAME}/${HW}/${BACKEND}/${CONFIG}/Latest"
+
+          # Create destination directory (convert path to uppercase)
+          mkdir -p "${DATABASE_ROOT}/${FOLDER^^}"
+          DEST_DIR="${DATABASE_ROOT}/${FOLDER^^}"
+
+          # Copy CSV and trace files from artifact download location
+          ARTIFACT_DIR="/tmp/alka-results-${{ github.run_id }}"
+          if [[ -d "${ARTIFACT_DIR}" ]]; then
+            echo "=== Copying files to database ==="
+            mkdir -p "${DEST_DIR}/Profile_Traces"
+            cp -v "${ARTIFACT_DIR}"/*.csv "${DEST_DIR}/" 2>/dev/null || echo "No CSV files to copy"
+            cp -v "${ARTIFACT_DIR}"/*.trace.json* "${DEST_DIR}/Profile_Traces" 2>/dev/null || echo "No JSON trace files to copy"
+            cp -v "${ARTIFACT_DIR}"/*.sqlite "${DEST_DIR}/Profile_Traces" 2>/dev/null || echo "No SQLite trace files to copy"
+            cp -v "${ARTIFACT_DIR}"/*.nsys-rep "${DEST_DIR}/Profile_Traces" 2>/dev/null || echo "No nsys-rep files to copy"
+
+            # Fetch run URL from GitHub Actions
+            echo "=== Fetching run info from GitHub Actions ==="
+            GITHUB_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+            # Create metadata.json with run details
+            cat > "${DEST_DIR}/metadata.json" <<EOF
+          {
+            "model": "${MODEL_RAW}",
+            "model_normalized": "${MODEL_NAME}",
+            "precision": "${PRECISION}",
+            "hardware": "${HW}",
+            "backend": "${BACKEND}",
+            "docker_image": "${{ inputs.docker_image }}",
+            "config": {
+              "tp": ${TP},
+              "dp": ${DP},
+              "ep": "${EP}",
+              "concurrency": ${CONC},
+              "isl": ${ISL},
+              "osl": ${OSL},
+              "extra_args": "${{ inputs.extra_args }}",
+              "env": "${{ inputs.env }}"
+            },
+            "runner": "${RUNNER}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "github_run_url": "${GITHUB_RUN_URL}",
+            "parse_mode": "${{ inputs.parse_mode }}"
+          }
+          EOF
+
+            echo ""
+            echo "=== Saved files ==="
+            ls -lh "${DEST_DIR}/"
+
+            echo ""
+            echo "=== Database indexing ==="
+            echo "Model: ${MODEL_RAW} → ${MODEL_NAME}"
+            echo "Precision: ${PRECISION}"
+            echo "Hardware: ${HW}"
+            echo "Backend: ${BACKEND}"
+            echo "Config: ${CONFIG}"
+            echo "Path: ${DEST_DIR}"
+            echo ""
+            echo "Files successfully saved to alka-database runner"
+
+            # Run ALKA analysis via genie
+            echo ""
+            echo "=== Triggering ALKA analysis via genie ==="
+            /proj/verif_release_ro/genie/current/bin/genie --dangerously-skip-permissions \
+              "Run /alka analyze on the profile trace located at: ${DEST_DIR}/Profile_Traces. Save all analysis results (categorized CSV, merged CSV, and HTML report) in the parent directory: ${DEST_DIR}" \
+              || echo "Warning: genie command failed"
+
+            # Log the command to CLAUDE_COMMANDS.txt
+            echo "Run /alka analyze on the profile trace located at: ${DEST_DIR}/Profile_Traces. Save all analysis results (categorized CSV, merged CSV, and HTML report) in the parent directory: ${DEST_DIR}" >> /wrk/dcgmktg_bench_xhd/ajith/ALKA_DATABASE/CLAUDE_COMMANDS.txt
+
+            # Create "Latest" symlink pointing to this run
+            LATEST_LINK="${DATABASE_ROOT}/${LATEST^^}"
+            ln -sfn "${DEST_DIR}" "${LATEST_LINK}"
+            echo "Created symlink: ${LATEST_LINK} -> ${DEST_DIR}"
+
+            # Cleanup temporary artifact directory
+            rm -rf "${ARTIFACT_DIR}"
+          else
+            echo "No artifact directory found at ${ARTIFACT_DIR}"
+            exit 1
+          fi
+          set +x
