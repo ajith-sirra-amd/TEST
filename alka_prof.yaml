@@ -1,0 +1,396 @@
+name: Profile
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "Model identifier (e.g. 'meta-llama/Llama-2-7b-chat-hf')"
+        type: string
+        required: true
+      runner:
+        description: "Self-hosted runner label"
+        type: string
+        required: true
+      backend:
+        description: "Backend (vllm, sglang, trtllm, atom)"
+        type: string
+        required: true
+      tp:
+        description: "Tensor parallel degree"
+        type: string
+        required: true
+      dp:
+        description: "Data parallel degree"
+        type: string
+        required: false
+        default: "1"
+      ep:
+        description: "Expert parallel degree (false to disable)"
+        type: string
+        required: false
+        default: "false"
+      isl:
+        description: "Initial sequence length for profiling"
+        type: string
+        required: true
+      osl:
+        description: "Overall sequence length for profiling"
+        type: string
+        required: true
+      concurrency:
+        description: "Concurrency level for profiling (e.g. string of async requests)"
+        type: string
+        required: true
+      device:
+        description: "Device type (amd or nv)"
+        type: string
+        required: true
+      docker_image:
+        description: "Docker image to use for profiling"
+        type: string
+        required: true
+      hf_cache:
+        description: "HuggingFace cache directory mounted into container"
+        type: string
+        required: true
+      env:
+        description: "Extra environment variables for benchNap"
+        type: string
+        required: false
+      extra_args:
+        description: "Extra benchNap server arguments"
+        type: string
+        required: false
+        default: ""
+      parse_mode:
+        description: "ALKA parser mode"
+        type: string
+        required: false
+        default: "decode-only"
+      hf_token:
+        description: "HuggingFace token override (masked)"
+        type: string
+        required: false
+        default: ""
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  case:
+    runs-on: ${{ inputs.runner }}
+    name: "${{ inputs.model }} | ${{ inputs.runner }} | ${{ inputs.backend }} | tp=${{ inputs.tp }} conc=${{ inputs.concurrency }} isl=${{ inputs.isl }} osl=${{ inputs.osl }}"
+    timeout-minutes: 180
+    env:
+      HF_TOKEN: ${{ inputs.hf_token != '' && inputs.hf_token || secrets.HF_TOKEN }}
+    steps:
+      - name: Clean up previous runs
+        run: |
+          docker run --rm -v "${PWD}:/workspace" -w /workspace alpine \
+            sh -c "rm -rf 3rdparty/benchNap/results_* 3rdparty/benchNap/__pycache__ 3rdparty/benchNap/config/ci_profile.yaml; chown -R $(id -u):$(id -g) 3rdparty/benchNap" \
+            2>/dev/null || true
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Update InferenceX to latest
+        run: git submodule update --remote 3rdparty/InferenceX
+
+      - name: Install host dependencies
+        run: |
+          if python3 -m pip install --break-system-packages pyyaml perfetto huggingface_hub 2>/dev/null; then
+            echo "Installed via system pip"
+          else
+            python3 -m ensurepip --upgrade 2>/dev/null \
+              || curl -sSL https://bootstrap.pypa.io/get-pip.py | python3 - --break-system-packages
+            python3 -m pip install --break-system-packages pyyaml perfetto huggingface_hub
+          fi
+
+      - name: Mask secrets
+        run: |
+          if [[ -n "${HF_TOKEN}" ]]; then echo "::add-mask::${HF_TOKEN}"; fi
+
+      - name: Generate benchNap config
+        env:
+          BN_MODEL: ${{ inputs.model }}
+          BN_TP: ${{ inputs.tp }}
+          BN_BACKEND: ${{ inputs.backend }}
+          BN_EXTRA: ${{ inputs.extra_args }}
+          BN_ISL: ${{ inputs.isl }}
+          BN_OSL: ${{ inputs.osl }}
+          BN_CONC: ${{ inputs.concurrency }}
+          BN_DEVICE: ${{ inputs.device }}
+          BN_ENV: ${{ inputs.env }}
+          BN_DP: ${{ inputs.dp }}
+          BN_EP: ${{ inputs.ep }}
+        run: |
+          python3 -c "
+          import yaml, os
+          tp = int(os.environ['BN_TP'])
+          dp = int(os.environ.get('BN_DP', '1'))
+          ep_raw = os.environ.get('BN_EP', 'false').strip().lower()
+          ep = False if ep_raw in ('false', '0', '') else int(ep_raw)
+          dev = 'HIP_VISIBLE_DEVICES' if os.environ['BN_DEVICE'] == 'amd' else 'CUDA_VISIBLE_DEVICES'
+          gpu_ids = ','.join(str(i) for i in range(tp))
+          env_vars = {dev: gpu_ids}
+          for pair in os.environ.get('BN_ENV', '').split():
+              if '=' in pair:
+                  k, v = pair.split('=', 1)
+                  env_vars[k] = v
+          entry = {
+              'model': os.environ['BN_MODEL'],
+              'tp': tp,
+              'dp': dp,
+              'ep': ep,
+              'backend': os.environ['BN_BACKEND'],
+              'accuracy': 0,
+              'profile': 1,
+              'extra_args': os.environ['BN_EXTRA'],
+              'port': 8733,
+              'env': env_vars,
+              'client': {
+                  'isl_osl': [[int(os.environ['BN_ISL']), int(os.environ['BN_OSL'])]],
+                  'max_concurrency': [int(os.environ['BN_CONC'])]
+              }
+          }
+          cfg = {'model_configs': [entry]}
+          with open('3rdparty/benchNap/config/ci_profile.yaml', 'w') as f:
+              yaml.dump(cfg, f, default_flow_style=False)
+          "
+          echo "=== Generated config ==="
+          cat 3rdparty/benchNap/config/ci_profile.yaml
+
+      - name: Pull Docker image
+        run: docker pull "${{ inputs.docker_image }}"
+
+      - name: Run benchNap profiling
+        run: |
+          set -x
+          set -euo pipefail
+          DEVICE="${{ inputs.device }}"
+          IMAGE="${{ inputs.docker_image }}"
+          HF_CACHE="${{ inputs.hf_cache }}"
+          CONTAINER_NAME="alka-profile-${GITHUB_RUN_ID}"
+
+          #echo "clean up exising container with name ${CONTAINER_NAME} if exists"
+          #docker stop $CONTAINER_NAME 2>/dev/null || true
+          #docker rm $CONTAINER_NAME 2>/dev/null || true
+
+          if [[ "${DEVICE}" == "amd" ]]; then
+            GPU_FLAGS=(
+              "--cap-add=SYS_PTRACE"
+              "--security-opt" "seccomp=unconfined"
+              "--device=/dev/kfd"
+              "--device=/dev/dri"
+              "--group-add" "video"
+            )
+          else
+            GPU_FLAGS=(
+              "--gpus" "all"
+              "--ulimit" "memlock=-1"
+              "--ulimit" "stack=67108864"
+            )
+          fi
+
+          RUN_CMD="cd /workspace && python3 run_main.py --config config/ci_profile.yaml"
+
+          echo "=== Launching profiling ==="
+          echo "Device: ${DEVICE} | Image: ${IMAGE} | HF cache: ${HF_CACHE} | CONTAINER_NAME: ${CONTAINER_NAME}"
+
+          docker run --rm \
+            --name "${CONTAINER_NAME}" \
+            "${GPU_FLAGS[@]}" \
+            --ipc=host \
+            --network=host \
+            -v "${PWD}/3rdparty/benchNap:/workspace" \
+            -w /workspace \
+            -v "${HF_CACHE}:/hf_cache" \
+            -e "HUGGINGFACE_HUB_CACHE=/hf_cache" \
+            -e "HF_TOKEN=${HF_TOKEN}" \
+            --entrypoint bash \
+            "${IMAGE}" \
+            -lc "${RUN_CMD}"
+
+      - name: Fix file permissions
+        if: always()
+        run: |
+          docker run --rm -v "${PWD}/3rdparty/benchNap:/workspace" -w /workspace alpine \
+            sh -c "chown -R $(id -u):$(id -g) /workspace" 2>/dev/null || true
+
+      - name: Collect results
+        if: always()
+        run: |
+          set -x
+          set -euo pipefail
+          BENCHNAP_DIR="3rdparty/benchNap"
+          echo "=== Trace files ==="
+          find "${BENCHNAP_DIR}/results_profile" -type f \
+            \( -name "*.trace.json*" -o -name "*.nsys-rep" -o -name "*.sqlite" \) \
+            2>/dev/null | while read -r f; do
+              echo "  ${f} ($(stat --printf='%s' "$f" 2>/dev/null || echo '?') bytes)"
+            done || echo "  No trace files found"
+
+      - name: Run ALKA pipeline
+        if: always()
+        run: |
+          set -x
+          set -euo pipefail
+          python3 -m pip install -q --break-system-packages transformers orjson typer
+          # Use runner workspace for tmp to avoid /tmp permission issues (e.g. MI355X)
+          export TMPDIR="${RUNNER_TEMP:-/tmp}"
+          BENCHNAP_DIR="3rdparty/benchNap"
+          DEVICE="${{ inputs.device }}"
+          BACKEND="${{ inputs.backend }}"
+          MODEL_ID=$(echo "${{ inputs.model }}" | tr '/' '-')
+          TP="${{ inputs.tp }}"
+          CONC="${{ inputs.concurrency }}"
+          RUNNER="${{ inputs.runner }}"
+          TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+          DP="${{ inputs.dp }}"
+          EP="${{ inputs.ep }}"
+          PARSE_MODE="${{ inputs.parse_mode }}"
+          DEST_DIR="data/profiles_batch/${MODEL_ID}_${BACKEND}_${PARSE_MODE}_tp${TP}_ep${EP}_dp${DP}_conc${CONC}_${RUNNER}_${TIMESTAMP}"
+          mkdir -p "${DEST_DIR}"
+
+          if [[ "${DEVICE}" == "amd" ]]; then
+            VENDOR="amd"
+          else
+            VENDOR="nvidia"
+          fi
+
+          # Search for trace file based on backend:
+          #   vllm/atom: *rank0*.pt.trace.json* (rank0 has kernel info, async traces don't)
+          #   sglang:    *-decode.trace.json.gz or *-prefill.trace.json.gz (stage-based)
+          #   trtllm:    .sqlite (nsys export)
+          TRACE_FILE=""
+          case "${BACKEND}" in
+            sglang)
+              if [[ "${PARSE_MODE}" == "prefill-only" ]]; then
+                TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*-prefill.trace.json*" | head -1)
+              else
+                TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*-decode.trace.json*" | head -1)
+              fi
+              # Fallback to any sglang trace
+              [[ -z "${TRACE_FILE}" ]] && TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*.trace.json*" | head -1)
+              ;;
+            vllm)
+              TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*rank0*.pt.trace.json*" | head -1)
+              [[ -z "${TRACE_FILE}" ]] && TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*.trace.json*" | head -1)
+              ;;
+            atom)
+              TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*.pt.trace.json*" ! -name "*capture_graph*" | head -1)
+              [[ -z "${TRACE_FILE}" ]] && TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*.trace.json*" | head -1)
+              ;;
+            trtllm)
+              TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*.sqlite" | head -1)
+              [[ -z "${TRACE_FILE}" ]] && TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*.nsys-rep" | head -1)
+              ;;
+            *)
+              TRACE_FILE=$(find "${BENCHNAP_DIR}/results_profile" -name "*.trace.json*" -o -name "*.sqlite" | head -1)
+              ;;
+          esac
+
+          if [[ -z "${TRACE_FILE}" ]]; then
+            echo "No trace file found; failing ALKA parsing step" >&2
+            exit 1
+          fi
+
+          if [[ "${{ inputs.device }}" == "nv" ]]; then
+            python3 tools/perfetto_pdl.py "${TRACE_FILE}" 
+            TRACE_FILE="${TRACE_FILE}_serialized.gz"
+          fi
+
+          # Determine output file prefix from parse mode
+          case "${PARSE_MODE}" in
+            decode-only) FILE_PREFIX="decode" ;;
+            prefill-only) FILE_PREFIX="prefill" ;;
+            *) FILE_PREFIX="${PARSE_MODE}" ;;
+          esac
+
+          echo "Trace: ${TRACE_FILE} → ${DEST_DIR}"
+          export HF_CACHE="${{ inputs.hf_cache }}"
+          export HF_HUB_CACHE="${{ inputs.hf_cache }}"
+          python3 tools/kernel_analyzer/alka_parser.py "${TRACE_FILE}" \
+            --${{ inputs.parse_mode }} \
+            --output "${DEST_DIR}/${FILE_PREFIX}_summary.csv" \
+            --events-output "${DEST_DIR}/${FILE_PREFIX}_events.csv" \
+            --layer-filtered-output "${DEST_DIR}/${FILE_PREFIX}_layer_filtered.csv" \
+            --hf-model-id "${{ inputs.model }}"
+
+          ls -la "${DEST_DIR}/"
+          echo "dest_dir=${DEST_DIR}" >> "$GITHUB_ENV"
+          echo "file_prefix=${FILE_PREFIX}" >> "$GITHUB_ENV"
+
+      - name: Export dashboard CSV
+        if: always() && env.dest_dir != ''
+        run: |
+          DEST_DIR="${dest_dir}"
+          FILE_PREFIX="${file_prefix}"
+          SUMMARY="${DEST_DIR}/${FILE_PREFIX}_summary.csv"
+          if [[ ! -f "${SUMMARY}" ]]; then
+            echo "No summary CSV found, skipping dashboard export"
+            exit 0
+          fi
+
+          # Derive hardware name from runner label
+          RUNNER="${{ inputs.runner }}"
+          case "${RUNNER}" in
+            *mi355x*) HW="mi355x" ;;
+            *mi350x*) HW="mi350x" ;;
+            *mi325x*) HW="mi325x" ;;
+            *mi300x*|tw*) HW="mi300x" ;;
+            *b200*|dgx*) HW="b200" ;;
+            *h200*) HW="h200" ;;
+            *h100*) HW="h100" ;;
+            *) HW="${RUNNER}" ;;
+          esac
+
+          python3 tools/kernel_analyzer/alka_dashboard_export.py \
+            --summary "${SUMMARY}" \
+            --output "${DEST_DIR}/kernel_analysis.csv" \
+            --provider "${{ inputs.backend }}" \
+            --model "${{ inputs.model }}" \
+            --hardware "${HW}" \
+            --concurrency "${{ inputs.concurrency }}"
+
+          echo "=== Dashboard CSV ==="
+          head -5 "${DEST_DIR}/kernel_analysis.csv"
+
+      - name: Upload ALKA results
+        if: always() && env.dest_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: alka-${{ inputs.backend }}-${{ inputs.runner }}-${{ inputs.tp }}tp-${{ inputs.concurrency }}con-${{ github.run_id }}
+          path: ${{ env.dest_dir }}/
+          if-no-files-found: warn
+
+      - name: Commit and push results
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          set -euo pipefail
+          DEST_DIR="${dest_dir:-}"
+          if [[ -z "${DEST_DIR}" ]] || ! ls "${DEST_DIR}"/* 2>/dev/null | head -1 > /dev/null; then
+            echo "No ALKA results to commit"; exit 0
+          fi
+
+          MODEL_ID=$(echo "${{ inputs.model }}" | tr '/' '-')
+          BACKEND="${{ inputs.backend }}"
+          RUNNER="${{ inputs.runner }}"
+          TP="${{ inputs.tp }}"
+          CONC="${{ inputs.concurrency }}"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add "${DEST_DIR}"
+          git commit -m "Add ALKA results: ${MODEL_ID} ${BACKEND} tp${TP} conc${CONC} on ${RUNNER} [automated]"
+
+          # Retry push to handle concurrent commits from parallel inputs jobs
+          MAX_RETRIES=5
+          for i in $(seq 1 $MAX_RETRIES); do
+            if git push; then
+              echo "Push succeeded on attempt $i"; break
+            fi
+            echo "Push failed (attempt $i/$MAX_RETRIES), rebasing..."
+            git pull --rebase origin main
+            [[ $i -eq $MAX_RETRIES ]] && { echo "Push failed after $MAX_RETRIES attempts"; exit 1; }
+          done
